@@ -15,6 +15,69 @@ const adminIds = (process.env.ADMIN_TELEGRAM_IDS || '5809093672')
   .map((s) => String(s.trim()))
   .filter(Boolean);
 
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+
+/** @param {string|number} chatId */
+async function tgSendMessage(chatId, text) {
+  if (!TELEGRAM_BOT_TOKEN) {
+    console.warn('TELEGRAM_BOT_TOKEN не задан — уведомления в Telegram отключены');
+    return { skipped: true };
+  }
+  if (chatId == null || chatId === '') return { skipped: true };
+  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text,
+      disable_web_page_preview: true,
+    }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok || !data.ok) {
+    const msg = data.description || `HTTP ${r.status}`;
+    throw new Error(msg);
+  }
+  return data;
+}
+
+async function notifyAdminsNewOrder(order) {
+  if (!TELEGRAM_BOT_TOKEN) return;
+  const lines = order.items
+    .map((i) => `• ${i.name} × ${i.qty} — ${i.price * i.qty} ₽`)
+    .join('\n');
+  const text =
+    `🔔 Новый заказ №${order.orderNumber}\n\n` +
+    `Покупатель: ${order.telegramUsername}\n` +
+    `TG user id: ${order.clientTelegramUserId || 'не указан'}\n` +
+    `${order.meetingAddress}, время ${order.meetingTime}\n` +
+    `Итого: ${order.total} ₽\n\n` +
+    lines;
+  for (const adminId of adminIds) {
+    try {
+      await tgSendMessage(adminId, text);
+    } catch (e) {
+      console.error('Telegram админу', adminId, e.message);
+    }
+  }
+}
+
+async function notifyBuyerOrderConfirmed(order) {
+  if (!TELEGRAM_BOT_TOKEN) return;
+  const uid = order.clientTelegramUserId;
+  if (!uid) return;
+  const text =
+    `✅ Ваш заказ №${order.orderNumber} принят.\n\n` +
+    `Администратор подтвердил заказ. Встреча: ${order.meetingAddress}, ${order.meetingTime}.\n` +
+    `Спасибо за заказ!`;
+  try {
+    await tgSendMessage(uid, text);
+  } catch (e) {
+    console.error('Telegram покупателю', uid, e.message);
+  }
+}
+
 function loadOrders() {
   try {
     if (fs.existsSync(ORDERS_FILE)) {
@@ -111,6 +174,8 @@ app.post('/api/orders', (req, res) => {
   orders.unshift(order);
   saveOrders(orders);
   res.json({ order });
+
+  notifyAdminsNewOrder(order).catch((e) => console.error('notifyAdminsNewOrder', e));
 });
 
 app.get('/api/orders/my', (req, res) => {
@@ -143,10 +208,15 @@ app.patch('/api/orders/:orderId/confirm', (req, res) => {
   if (!o) {
     return res.status(404).json({ error: 'not_found' });
   }
+  if (o.status === 'confirmed') {
+    return res.json({ order: o });
+  }
   o.status = 'confirmed';
   o.confirmedAt = new Date().toISOString();
   saveOrders(orders);
   res.json({ order: o });
+
+  notifyBuyerOrderConfirmed(o).catch((e) => console.error('notifyBuyerOrderConfirmed', e));
 });
 
 app.listen(PORT, () => {
