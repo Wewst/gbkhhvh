@@ -1,0 +1,17 @@
+{
+  "name": "nakur-berzniki-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "API и статика для мини-приложения NAKUR",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}
