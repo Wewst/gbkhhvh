@@ -15,7 +15,7 @@ const adminIds = (process.env.ADMIN_TELEGRAM_IDS || '5809093672')
   .map((s) => String(s.trim()))
   .filter(Boolean);
 
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8106010979:AAF72omjvH000PvdqfyRkRqTcuDtts0-fR4';
 
 /** @param {string|number} chatId */
 async function tgSendMessage(chatId, text) {
