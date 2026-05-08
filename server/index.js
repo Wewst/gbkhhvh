@@ -15,7 +15,16 @@ const adminIds = (process.env.ADMIN_TELEGRAM_IDS || '5809093672')
   .map((s) => String(s.trim()))
   .filter(Boolean);
 
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8106010979:AAF72omjvH000PvdqfyRkRqTcuDtts0-fR4';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+
+function formatDateRuDMY(iso) {
+  if (!iso || typeof iso !== 'string') return '';
+  const p = iso.split('-');
+  if (p.length !== 3) return iso;
+  const [y, m, d] = p;
+  if (!y || !m || !d) return iso;
+  return `${String(d).padStart(2, '0')}.${String(m).padStart(2, '0')}.${y}`;
+}
 
 /** @param {string|number} chatId */
 async function tgSendMessage(chatId, text) {
@@ -48,7 +57,7 @@ async function notifyAdminsNewOrder(order) {
     .map((i) => `• ${i.name} × ${i.qty} — ${i.price * i.qty} ₽`)
     .join('\n');
   const when = order.meetingDate
-    ? `${order.meetingDate}, ${order.meetingTime}`
+    ? `${formatDateRuDMY(order.meetingDate)}, ${order.meetingTime}`
     : `${order.meetingAddress}, время ${order.meetingTime}`;
   const text =
     `🔔 Новый заказ №${order.orderNumber}\n\n` +
@@ -71,7 +80,7 @@ async function notifyBuyerOrderConfirmed(order) {
   const uid = order.clientTelegramUserId;
   if (!uid) return;
   const when = order.meetingDate
-    ? `${order.meetingDate} в ${order.meetingTime}`
+    ? `${formatDateRuDMY(order.meetingDate)} в ${order.meetingTime}`
     : `${order.meetingAddress}, ${order.meetingTime}`;
   const text =
     `✅ Ваш заказ №${order.orderNumber} принят.\n\n` +
