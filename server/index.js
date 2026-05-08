@@ -47,11 +47,14 @@ async function notifyAdminsNewOrder(order) {
   const lines = order.items
     .map((i) => `• ${i.name} × ${i.qty} — ${i.price * i.qty} ₽`)
     .join('\n');
+  const when = order.meetingDate
+    ? `${order.meetingDate}, ${order.meetingTime}`
+    : `${order.meetingAddress}, время ${order.meetingTime}`;
   const text =
     `🔔 Новый заказ №${order.orderNumber}\n\n` +
     `Покупатель: ${order.telegramUsername}\n` +
     `TG user id: ${order.clientTelegramUserId || 'не указан'}\n` +
-    `${order.meetingAddress}, время ${order.meetingTime}\n` +
+    `${when}\n` +
     `Итого: ${order.total} ₽\n\n` +
     lines;
   for (const adminId of adminIds) {
@@ -67,9 +70,12 @@ async function notifyBuyerOrderConfirmed(order) {
   if (!TELEGRAM_BOT_TOKEN) return;
   const uid = order.clientTelegramUserId;
   if (!uid) return;
+  const when = order.meetingDate
+    ? `${order.meetingDate} в ${order.meetingTime}`
+    : `${order.meetingAddress}, ${order.meetingTime}`;
   const text =
     `✅ Ваш заказ №${order.orderNumber} принят.\n\n` +
-    `Администратор подтвердил заказ. Встреча: ${order.meetingAddress}, ${order.meetingTime}.\n` +
+    `Администратор подтвердил заказ. Встреча: ${when}.\n` +
     `Спасибо за заказ!`;
   try {
     await tgSendMessage(uid, text);
@@ -133,16 +139,36 @@ app.get('/api/health', (_req, res) => {
 
 app.post('/api/orders', (req, res) => {
   const body = req.body || {};
-  const { items, meetingTime, telegramUsername, meetingAddress, clientTelegramUserId } = body;
+  const {
+    items,
+    meetingTime,
+    telegramUsername,
+    meetingAddress,
+    clientTelegramUserId,
+    meetingYear,
+    meetingMonth,
+    meetingDay,
+  } = body;
 
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: 'empty_items' });
   }
   const tg = typeof telegramUsername === 'string' ? telegramUsername.trim() : '';
   const time = typeof meetingTime === 'string' ? meetingTime.trim() : '';
-  if (!time || !tg) {
+  const y = Math.floor(Number(meetingYear));
+  const mo = Math.floor(Number(meetingMonth));
+  const d = Math.floor(Number(meetingDay));
+  if (!time || !tg || !Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) {
     return res.status(400).json({ error: 'missing_fields' });
   }
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) {
+    return res.status(400).json({ error: 'invalid_meeting_date' });
+  }
+  const check = new Date(y, mo - 1, d);
+  if (check.getFullYear() !== y || check.getMonth() !== mo - 1 || check.getDate() !== d) {
+    return res.status(400).json({ error: 'invalid_meeting_date' });
+  }
+  const meetingDate = `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 
   const normalizedItems = items.map((i) => ({
     id: String(i.id ?? ''),
@@ -164,6 +190,10 @@ app.post('/api/orders', (req, res) => {
     items: normalizedItems,
     total,
     meetingTime: time,
+    meetingDate,
+    meetingYear: y,
+    meetingMonth: mo,
+    meetingDay: d,
     meetingAddress: meetingAddress || 'Адрес встречи',
     telegramUsername: tg,
     clientTelegramUserId: clientTelegramUserId != null ? String(clientTelegramUserId) : null,
