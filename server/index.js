@@ -10,6 +10,7 @@ const PORT = Number(process.env.PORT) || 3000;
 const parentDir = path.join(__dirname, '..');
 const DATA_DIR = path.join(__dirname, 'data');
 const ORDERS_FILE = path.join(DATA_DIR, 'orders.json');
+const PRODUCTS_FILE = path.join(DATA_DIR, 'products.json');
 
 const adminIds = (process.env.ADMIN_TELEGRAM_IDS || '5809093672')
   .split(',')
@@ -17,6 +18,52 @@ const adminIds = (process.env.ADMIN_TELEGRAM_IDS || '5809093672')
   .filter(Boolean);
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8106010979:AAF72omjvH000PvdqfyRkRqTcuDtts0-fR4';
+
+function ensureDataDir() {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+function loadProducts() {
+  try {
+    if (fs.existsSync(PRODUCTS_FILE)) {
+      const raw = fs.readFileSync(PRODUCTS_FILE, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+      if (parsed && typeof parsed === 'object' && Array.isArray(parsed.products)) return parsed.products;
+    }
+  } catch (e) {
+    console.error('products load error', e);
+  }
+  // Дефолтные остатки (можно править в server/data/products.json)
+  return [
+    { id: '1', name: 'Лимон мята', stock: 155 },
+    { id: '2', name: 'Дыня личи', stock: 5 },
+    { id: '3', name: 'Персиковый йогурт', stock: 4 },
+    { id: '4', name: 'Ягодное мороженое', stock: 1 },
+    { id: '5', name: 'Тархун фейхуа', stock: 1 },
+    { id: '6', name: 'Арбузный лимонад', stock: 5 },
+    { id: '7', name: 'Прайд вейп', stock: 28 },
+    { id: '8', name: 'Мини', stock: 7 },
+  ];
+}
+
+function saveProducts(list) {
+  try {
+    ensureDataDir();
+    fs.writeFileSync(PRODUCTS_FILE, JSON.stringify(list, null, 2), 'utf8');
+  } catch (e) {
+    console.error('products save error', e);
+  }
+}
+
+let products = loadProducts();
+// Создаём файл при первом запуске, чтобы было где менять остатки
+ensureDataDir();
+if (!fs.existsSync(PRODUCTS_FILE)) saveProducts(products);
+
+function getProductById(pid) {
+  return products.find((p) => String(p.id) === String(pid));
+}
 
 function formatDateRuDMY(iso) {
   if (!iso || typeof iso !== 'string') return '';
@@ -114,10 +161,9 @@ function notifyBuyerOrderConfirmed(order) {
   const when = order.meetingDate
     ? `${formatDateRuDMY(order.meetingDate)} в ${order.meetingTime}`
     : `${order.meetingAddress}, ${order.meetingTime}`;
-  const phoneLine = order.buyerPhone ? `\nВаш телефон для связи: ${order.buyerPhone}` : '';
   const text =
     `✅ Ваш заказ №${order.orderNumber} принят.\n\n` +
-    `Администратор подтвердил заказ. Встреча: ${when}.${phoneLine}\n` +
+    `Администратор подтвердил заказ. Встреча: ${when}.\n` +
     `Спасибо за заказ!`;
   return tgSendMessage(uid, text).catch((e) => {
     console.error('Telegram покупателю', uid, e.message);
@@ -175,6 +221,18 @@ app.use(express.static(parentDir, { index: 'index.html' }));
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true });
+});
+
+app.get('/api/products', (_req, res) => {
+  // отдаём только то, что нужно фронту
+  res.json({
+    products: products.map((p) => ({
+      id: String(p.id),
+      name: String(p.name || ''),
+      stock: Number.isFinite(Number(p.stock)) ? Number(p.stock) : 0,
+    })),
+    updatedAt: new Date().toISOString(),
+  });
 });
 
 app.post('/api/orders', (req, res) => {
@@ -287,10 +345,44 @@ app.patch('/api/orders/:orderId/confirm', (req, res) => {
   if (o.status === 'confirmed') {
     return res.json({ order: o });
   }
+
+  // списываем остатки только при подтверждении админом
+  const need = (o.items || []).map((i) => ({
+    id: String(i.id),
+    qty: Math.max(0, Math.floor(Number(i.qty || 0))),
+  }));
+
+  const problems = [];
+  for (const row of need) {
+    const p = getProductById(row.id);
+    if (!p) {
+      problems.push({ id: row.id, reason: 'not_found' });
+      continue;
+    }
+    const stock = Math.max(0, Math.floor(Number(p.stock || 0)));
+    if (row.qty <= 0) continue;
+    if (stock < row.qty) {
+      problems.push({ id: row.id, name: p.name, stock, requested: row.qty, reason: 'insufficient' });
+    }
+  }
+
+  if (problems.length) {
+    return res.status(409).json({ error: 'insufficient_stock', problems });
+  }
+
+  for (const row of need) {
+    const p = getProductById(row.id);
+    if (!p) continue;
+    const stock = Math.max(0, Math.floor(Number(p.stock || 0)));
+    if (row.qty <= 0) continue;
+    p.stock = Math.max(0, stock - row.qty);
+  }
+  saveProducts(products);
+
   o.status = 'confirmed';
   o.confirmedAt = new Date().toISOString();
   saveOrders(orders);
-  res.json({ order: o });
+  res.json({ order: o, productsUpdated: true });
 
   notifyBuyerOrderConfirmed(o).catch((e) => console.error('notifyBuyerOrderConfirmed', e));
 });
