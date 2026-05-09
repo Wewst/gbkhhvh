@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -15,7 +16,7 @@ const adminIds = (process.env.ADMIN_TELEGRAM_IDS || '5809093672')
   .map((s) => String(s.trim()))
   .filter(Boolean);
 
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8106010979:AAF72omjvH000PvdqfyRkRqTcuDtts0-fR4';
 
 function formatDateRuDMY(iso) {
   if (!iso || typeof iso !== 'string') return '';
@@ -26,33 +27,60 @@ function formatDateRuDMY(iso) {
   return `${String(d).padStart(2, '0')}.${String(m).padStart(2, '0')}.${y}`;
 }
 
+/** Отправка через https — работает на любом Node.js без глобального fetch */
 /** @param {string|number} chatId */
-async function tgSendMessage(chatId, text) {
+function tgSendMessage(chatId, text) {
   if (!TELEGRAM_BOT_TOKEN) {
     console.warn('TELEGRAM_BOT_TOKEN не задан — уведомления в Telegram отключены');
-    return { skipped: true };
+    return Promise.resolve({ skipped: true });
   }
-  if (chatId == null || chatId === '') return { skipped: true };
-  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      disable_web_page_preview: true,
-    }),
+  if (chatId == null || chatId === '') return Promise.resolve({ skipped: true });
+
+  const payload = JSON.stringify({
+    chat_id: chatId,
+    text: String(text),
+    disable_web_page_preview: true,
   });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok || !data.ok) {
-    const msg = data.description || `HTTP ${r.status}`;
-    throw new Error(msg);
-  }
-  return data;
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        hostname: 'api.telegram.org',
+        port: 443,
+        path: `/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Length': Buffer.byteLength(payload, 'utf8'),
+        },
+      },
+      (res) => {
+        let raw = '';
+        res.on('data', (chunk) => {
+          raw += chunk;
+        });
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(raw || '{}');
+            if (!data.ok) {
+              reject(new Error(data.description || `Telegram API ${res.statusCode}`));
+            } else {
+              resolve(data);
+            }
+          } catch (err) {
+            reject(err);
+          }
+        });
+      }
+    );
+    req.on('error', reject);
+    req.write(payload, 'utf8');
+    req.end();
+  });
 }
 
-async function notifyAdminsNewOrder(order) {
-  if (!TELEGRAM_BOT_TOKEN) return;
+function notifyAdminsNewOrder(order) {
+  if (!TELEGRAM_BOT_TOKEN) return Promise.resolve();
   const lines = order.items
     .map((i) => `• ${i.name} × ${i.qty} — ${i.price * i.qty} ₽`)
     .join('\n');
@@ -67,19 +95,22 @@ async function notifyAdminsNewOrder(order) {
     `${when}\n` +
     `Итого: ${order.total} ₽\n\n` +
     lines;
-  for (const adminId of adminIds) {
-    try {
-      await tgSendMessage(adminId, text);
-    } catch (e) {
-      console.error('Telegram админу', adminId, e.message);
-    }
-  }
+  return Promise.all(
+    adminIds.map((adminId) =>
+      tgSendMessage(adminId, text).catch((e) => {
+        console.error('Telegram админу', adminId, e.message);
+      })
+    )
+  );
 }
 
-async function notifyBuyerOrderConfirmed(order) {
-  if (!TELEGRAM_BOT_TOKEN) return;
+function notifyBuyerOrderConfirmed(order) {
+  if (!TELEGRAM_BOT_TOKEN) return Promise.resolve();
   const uid = order.clientTelegramUserId;
-  if (!uid) return;
+  if (!uid) {
+    console.warn('notifyBuyerOrderConfirmed: нет clientTelegramUserId — ЛС покупателю не отправить (откройте магазин из Telegram Mini App)');
+    return Promise.resolve();
+  }
   const when = order.meetingDate
     ? `${formatDateRuDMY(order.meetingDate)} в ${order.meetingTime}`
     : `${order.meetingAddress}, ${order.meetingTime}`;
@@ -88,11 +119,9 @@ async function notifyBuyerOrderConfirmed(order) {
     `✅ Ваш заказ №${order.orderNumber} принят.\n\n` +
     `Администратор подтвердил заказ. Встреча: ${when}.${phoneLine}\n` +
     `Спасибо за заказ!`;
-  try {
-    await tgSendMessage(uid, text);
-  } catch (e) {
+  return tgSendMessage(uid, text).catch((e) => {
     console.error('Telegram покупателю', uid, e.message);
-  }
+  });
 }
 
 function loadOrders() {
@@ -268,4 +297,14 @@ app.patch('/api/orders/:orderId/confirm', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`NAKUR API слушает порт ${PORT}, статика: ${parentDir}`);
+  if (!TELEGRAM_BOT_TOKEN) {
+    console.warn(
+      '[Telegram] Задайте переменную окружения TELEGRAM_BOT_TOKEN (токен от @BotFather) — иначе сообщения админу и покупателям не уходят.'
+    );
+  } else {
+    console.log('[Telegram] Токен бота найден, отправка ЛС включена.');
+  }
+  if (adminIds.length) {
+    console.log('[Telegram] ADMIN_TELEGRAM_IDS:', adminIds.join(', '));
+  }
 });
