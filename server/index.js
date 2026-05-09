@@ -62,6 +62,7 @@ async function notifyAdminsNewOrder(order) {
   const text =
     `🔔 Новый заказ №${order.orderNumber}\n\n` +
     `Покупатель: ${order.telegramUsername}\n` +
+    `Телефон: ${order.buyerPhone || '—'}\n` +
     `TG user id: ${order.clientTelegramUserId || 'не указан'}\n` +
     `${when}\n` +
     `Итого: ${order.total} ₽\n\n` +
@@ -82,9 +83,10 @@ async function notifyBuyerOrderConfirmed(order) {
   const when = order.meetingDate
     ? `${formatDateRuDMY(order.meetingDate)} в ${order.meetingTime}`
     : `${order.meetingAddress}, ${order.meetingTime}`;
+  const phoneLine = order.buyerPhone ? `\nВаш телефон для связи: ${order.buyerPhone}` : '';
   const text =
     `✅ Ваш заказ №${order.orderNumber} принят.\n\n` +
-    `Администратор подтвердил заказ. Встреча: ${when}.\n` +
+    `Администратор подтвердил заказ. Встреча: ${when}.${phoneLine}\n` +
     `Спасибо за заказ!`;
   try {
     await tgSendMessage(uid, text);
@@ -157,6 +159,7 @@ app.post('/api/orders', (req, res) => {
     meetingYear,
     meetingMonth,
     meetingDay,
+    buyerPhone,
   } = body;
 
   if (!Array.isArray(items) || items.length === 0) {
@@ -164,11 +167,15 @@ app.post('/api/orders', (req, res) => {
   }
   const tg = typeof telegramUsername === 'string' ? telegramUsername.trim() : '';
   const time = typeof meetingTime === 'string' ? meetingTime.trim() : '';
+  const phone = typeof buyerPhone === 'string' ? buyerPhone.trim() : '';
   const y = Math.floor(Number(meetingYear));
   const mo = Math.floor(Number(meetingMonth));
   const d = Math.floor(Number(meetingDay));
-  if (!time || !tg || !Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) {
+  if (!time || !tg || !phone || !Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) {
     return res.status(400).json({ error: 'missing_fields' });
+  }
+  if (!/^\+7[9]\d{9}$/.test(phone)) {
+    return res.status(400).json({ error: 'invalid_phone' });
   }
   if (mo < 1 || mo > 12 || d < 1 || d > 31) {
     return res.status(400).json({ error: 'invalid_meeting_date' });
@@ -205,6 +212,7 @@ app.post('/api/orders', (req, res) => {
     meetingDay: d,
     meetingAddress: meetingAddress || 'Адрес встречи',
     telegramUsername: tg,
+    buyerPhone: phone,
     clientTelegramUserId: clientTelegramUserId != null ? String(clientTelegramUserId) : null,
     createdAt: new Date().toISOString(),
     confirmedAt: null,
